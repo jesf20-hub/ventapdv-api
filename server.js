@@ -6,8 +6,16 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// Railway proporciona DATABASE_URL automáticamente
+const connectionString = process.env.DATABASE_URL || process.env.POSTGRES_URL;
+
+if (!connectionString) {
+  console.error('❌ DATABASE_URL no configurada');
+  process.exit(1);
+}
+
 const pool = new pg.Pool({
-  connectionString: 'postgres://postgres:hzJWmFtWwvnBLORWclfEAdforvQQRFsM@postgres.railway.internal:5432/railway'
+  connectionString: connectionString
 });
 
 async function initDB() {
