@@ -21,15 +21,79 @@ const pool = new pg.Pool({
 async function initDB() {
   const client = await pool.connect();
   try {
+    // Tabla de unidades de medida
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS unit_types (
+        id SERIAL PRIMARY KEY,
+        name VARCHAR(50) NOT NULL,
+        abreviation VARCHAR(10) NOT NULL
+      )
+    `);
+    
+    // Tabla de familias/categorías
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS families (
+        id SERIAL PRIMARY KEY,
+        name VARCHAR(100) NOT NULL,
+        description TEXT
+      )
+    `);
+    
+    // Tabla de productos mejorada
     await client.query(`
       CREATE TABLE IF NOT EXISTS products (
         id SERIAL PRIMARY KEY,
         name VARCHAR(255) NOT NULL,
+        sku VARCHAR(50) UNIQUE,
+        barcode VARCHAR(50),
+        description TEXT,
         price DECIMAL(10,2) NOT NULL,
-        stock INTEGER NOT NULL,
-        category VARCHAR(100)
+        cost DECIMAL(10,2),
+        stock INTEGER NOT NULL DEFAULT 0,
+        min_stock INTEGER DEFAULT 5,
+        category VARCHAR(100),
+        family_id INTEGER REFERENCES families(id),
+        unit_type_id INTEGER REFERENCES unit_types(id),
+        status VARCHAR(20) DEFAULT 'active',
+        image_url TEXT,
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW()
       )
     `);
+    
+    // Insertar unidades por defecto
+    const unitsExist = await client.query('SELECT COUNT(*) FROM unit_types');
+    if (parseInt(unitsExist.rows[0].count) === 0) {
+      await client.query(`
+        INSERT INTO unit_types (name, abreviation) VALUES 
+        ('Pieza', 'pza'),
+        ('Kilogramo', 'kg'),
+        ('Gramo', 'g'),
+        ('Litro', 'L'),
+        ('Mililitro', 'mL'),
+        ('Caja', 'caja'),
+        ('Paquete', 'pqt'),
+        ('Bolsa', 'bolsa'),
+        ('Metro', 'm'),
+        ('Centímetro', 'cm')
+      `);
+    }
+    
+    // Insertar familias por defecto
+    const familiesExist = await client.query('SELECT COUNT(*) FROM families');
+    if (parseInt(familiesExist.rows[0].count) === 0) {
+      await client.query(`
+        INSERT INTO families (name, description) VALUES 
+        ('Bebidas', 'Bebidas frías y calientes'),
+        ('Snacks', 'Botanas y frituras'),
+        ('Panadería', 'Pan y productos de horno'),
+        ('Lácteos', 'Leche, queso y derivados'),
+        ('Huevos', 'Huevos de gallina'),
+        ('Abarrotes', 'Productos de tienda básica'),
+        ('Limpieza', 'Productos de limpieza'),
+        ('Personal', 'Cuidado personal')
+      `);
+    }
     
     await client.query(`
       CREATE TABLE IF NOT EXISTS clients (
@@ -62,7 +126,13 @@ async function initDB() {
 
 app.get('/api/products', async (req, res) => {
   try {
-    const result = await pool.query('SELECT * FROM products ORDER BY id');
+    const result = await pool.query(`
+      SELECT p.*, f.name as family_name, u.name as unit_name, u.abreviation as unit_abrev
+      FROM products p
+      LEFT JOIN families f ON p.family_id = f.id
+      LEFT JOIN unit_types u ON p.unit_type_id = u.id
+      ORDER BY p.id
+    `);
     res.json(result.rows);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -71,11 +141,14 @@ app.get('/api/products', async (req, res) => {
 
 app.post('/api/products', async (req, res) => {
   try {
-    const { name, price, stock, category } = req.body;
-    const result = await pool.query(
-      'INSERT INTO products (name, price, stock, category) VALUES ($1, $2, $3, $4) RETURNING *',
-      [name, price, stock, category]
-    );
+    const { 
+      name, sku, barcode, description, price, cost, stock, min_stock,
+      category, family_id, unit_type_id, status, image_url 
+    } = req.body;
+    const result = await pool.query(`
+      INSERT INTO products (name, sku, barcode, description, price, cost, stock, min_stock, category, family_id, unit_type_id, status, image_url)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING *
+    `, [name, sku, barcode, description, price, cost, stock, min_stock, category, family_id, unit_type_id, status || 'active', image_url]);
     res.json(result.rows[0]);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -85,11 +158,54 @@ app.post('/api/products', async (req, res) => {
 app.put('/api/products/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, price, stock, category } = req.body;
-    const result = await pool.query(
-      'UPDATE products SET name=$1, price=$2, stock=$3, category=$4 WHERE id=$5 RETURNING *',
-      [name, price, stock, category, id]
-    );
+    const { 
+      name, sku, barcode, description, price, cost, stock, min_stock,
+      category, family_id, unit_type_id, status, image_url 
+    } = req.body;
+    const result = await pool.query(`
+      UPDATE products SET name=$1, sku=$2, barcode=$3, description=$4, price=$5, cost=$6, stock=$7, min_stock=$8, category=$9, family_id=$10, unit_type_id=$11, status=$12, image_url=$13, updated_at=NOW()
+      WHERE id=$14 RETURNING *
+    `, [name, sku, barcode, description, price, cost, stock, min_stock, category, family_id, unit_type_id, status, image_url, id]);
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Unit Types endpoints
+app.get('/api/unit-types', async (req, res) => {
+  try {
+    const result = await pool.query('SELECT * FROM unit_types ORDER BY id');
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/unit-types', async (req, res) => {
+  try {
+    const { name, abreviation } = req.body;
+    const result = await pool.query('INSERT INTO unit_types (name, abreviation) VALUES ($1, $2) RETURNING *', [name, abreviation]);
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Families endpoints
+app.get('/api/families', async (req, res) => {
+  try {
+    const result = await pool.query('SELECT * FROM families ORDER BY id');
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/families', async (req, res) => {
+  try {
+    const { name, description } = req.body;
+    const result = await pool.query('INSERT INTO families (name, description) VALUES ($1, $2) RETURNING *', [name, description]);
     res.json(result.rows[0]);
   } catch (err) {
     res.status(500).json({ error: err.message });
